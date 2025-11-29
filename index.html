@@ -7,56 +7,73 @@
 <style>
     body {
         font-family: Arial, sans-serif;
-        background: #111;
-        color: white;
+        background: #0d0d0d;
+        color: #fff;
         text-align: center;
         padding: 20px;
     }
 
-    .container {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
+    h1 {
+        font-size: 32px;
+        margin-bottom: 10px;
+        text-shadow: 0 0 10px #ff8;
     }
 
-    canvas {
-        background: #623a16;
-        border-radius: 20px;
-        padding: 20px;
-        margin-top: 20px;
+    .roleta-container {
+        position: relative;
+        width: 450px;
+        height: 450px;
+        margin: auto;
+        margin-top: 40px;
     }
 
+    /* CANVAS */
+    #roleta {
+        width: 450px;
+        height: 450px;
+        border-radius: 50%;
+        box-shadow: 0 0 25px #000, 0 0 50px #3a1;
+    }
+
+    /* PONTEIRO */
     #pointer {
+        position: absolute;
+        top: -5px;
+        left: 50%;
+        transform: translateX(-50%);
         width: 0;
         height: 0;
         border-left: 20px solid transparent;
         border-right: 20px solid transparent;
-        border-bottom: 30px solid white;
-        margin-bottom: -25px;
-        position: relative;
-        z-index: 10;
+        border-bottom: 35px solid #ffffff;
+        filter: drop-shadow(0px 0px 5px #fff);
+        z-index: 50;
     }
 
+    /* Botão */
     button {
-        margin-top: 20px;
-        padding: 15px 30px;
-        font-size: 18px;
-        background: #ff4000;
+        margin-top: 30px;
+        padding: 15px 35px;
+        font-size: 20px;
+        background: linear-gradient(45deg, #ff3c00, #ff7300);
         border: none;
         color: white;
-        border-radius: 12px;
+        font-weight: bold;
+        border-radius: 15px;
         cursor: pointer;
         transition: 0.2s;
+        box-shadow: 0 0 15px #ff3c00;
     }
 
     button:hover {
-        background: #ff5e24;
+        transform: scale(1.08);
+        box-shadow: 0 0 25px #ff7300;
     }
 
     #resultado {
-        margin-top: 20px;
-        font-size: 22px;
-        font-weight: bold;
+        margin-top: 25px;
+        font-size: 24px;
+        text-shadow: 0 0 10px #fff;
     }
 </style>
 </head>
@@ -65,9 +82,9 @@
 
 <h1>🎡 Roleta de Raças</h1>
 
-<div class="container">
+<div class="roleta-container">
     <div id="pointer"></div>
-    <canvas id="roleta" width="400" height="400"></canvas>
+    <canvas id="roleta" width="450" height="450"></canvas>
 </div>
 
 <button onclick="girar()">Girar Roleta</button>
@@ -78,84 +95,84 @@
 const canvas = document.getElementById("roleta");
 const ctx = canvas.getContext("2d");
 
-// RAÇAS + PORCENTAGENS
 const racas = [
-    { nome: "Humano", cor: "#e8d3a4", chance: 50 },
+    { nome: "Humano", cor: "#e7d4a1", chance: 50 },
     { nome: "Elfo", cor: "#00ff55", chance: 30 },
     { nome: "Anão", cor: "#7a4a12", chance: 10 },
     { nome: "Bruxa", cor: "#6a00ff", chance: 5 },
-    { nome: "Demônio", cor: "#ff2700", chance: 5 }
+    { nome: "Demônio", cor: "#ff1a00", chance: 5 }
 ];
 
-// Converte porcentagens em ângulos
 let setores = [];
-let anguloAtual = 0;
+let anguloInicial = 0;
 
+// converter porcentagens em ângulos
 racas.forEach(r => {
-    const tamanho = (r.chance / 100) * Math.PI * 2;
+    const ang = (r.chance / 100) * Math.PI * 2;
     setores.push({
         nome: r.nome,
         cor: r.cor,
-        inicio: anguloAtual,
-        fim: anguloAtual + tamanho
+        inicio: anguloInicial,
+        fim: anguloInicial + ang
     });
-    anguloAtual += tamanho;
+    anguloInicial += ang;
 });
 
-// DESENHAR ROLETA
-function desenharRoleta(rotacao = 0) {
+function desenharRoleta(rot = 0) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     setores.forEach(s => {
         ctx.beginPath();
-        ctx.moveTo(200, 200);
-        ctx.arc(200, 200, 180, s.inicio + rotacao, s.fim + rotacao);
+        ctx.moveTo(225, 225);
+        ctx.arc(225, 225, 220, s.inicio + rot, s.fim + rot);
         ctx.fillStyle = s.cor;
         ctx.fill();
-
+        
         // Texto
         ctx.save();
-        ctx.translate(200, 200);
-        ctx.rotate((s.inicio + s.fim) / 2 + rotacao);
+        ctx.translate(225, 225);
+        ctx.rotate((s.inicio + s.fim) / 2 + rot);
         ctx.textAlign = "right";
         ctx.fillStyle = "white";
-        ctx.font = "20px Arial";
-        ctx.fillText(s.nome, 160, 10);
+        ctx.font = "bold 22px Arial";
+        ctx.fillText(s.nome, 190, 10);
         ctx.restore();
     });
 }
 
 desenharRoleta();
 
-// PEGAR RESULTADO
-function resultadoDaRoleta(rotacaoFinal) {
-    const angulo = ((Math.PI * 2) - (rotacaoFinal % (Math.PI * 2))) % (Math.PI * 2);
+// pega resultado com base no ângulo onde o ponteiro aponta (topo)
+function pegarResultado(rotacaoFinal) {
+    const ang = ((Math.PI * 2) - (rotacaoFinal % (Math.PI * 2))) % (Math.PI * 2);
 
-    return setores.find(s => angulo >= s.inicio && angulo < s.fim).nome;
+    const setor = setores.find(s => ang >= s.inicio && ang < s.fim);
+    return setor ? setor.nome : "Erro";
 }
 
 let girando = false;
 
-// GIRAR
 function girar() {
     if (girando) return;
     girando = true;
 
-    let rotacao = 0;
-    let velocidade = (Math.random() * 0.15) + 0.25;
+    let rot = 0;
+    let vel = (Math.random() * 0.15) + 0.25; // velocidade
 
     const anim = setInterval(() => {
-        rotacao += velocidade;
-        velocidade *= 0.985;
+        rot += vel;
+        vel *= 0.985; // desaceleração
 
-        desenharRoleta(rotacao);
+        desenharRoleta(rot);
 
-        if (velocidade < 0.002) {
+        if (vel < 0.002) {
             clearInterval(anim);
             girando = false;
 
-            const escolhido = resultadoDaRoleta(rotacao);
-            document.getElementById("resultado").innerHTML = "✨ Você tirou: <b>" + escolhido + "</b>";
+            const resultado = pegarResultado(rot);
+
+            document.getElementById("resultado").innerHTML =
+                "✨ Você tirou: <b>" + resultado + "</b>";
         }
     }, 16);
 }
