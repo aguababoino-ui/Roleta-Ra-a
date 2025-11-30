@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Roleta de Cargos</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+    body {
+        background: radial-gradient(circle, #1a1a1a, #000);
+        font-family: Arial, sans-serif;
+        text-align: center;
+        color: white;
+    }
+
+    h1 {
+        margin-top: 25px;
+        font-size: 38px;
+        text-shadow: 0 0 12px #ff8c00, 0 0 22px #ff4800;
+        font-weight: bold;
+    }
+
+    .container {
+        margin: auto;
+        margin-top: 40px;
+        width: 380px;
+        padding: 25px;
+        background: #1a1a1a;
+        border-radius: 22px;
+        box-shadow: 0 0 35px #ff5c0099, inset 0 0 20px #000;
+        border: 2px solid #ff5c00aa;
+    }
+
+    .wheel-box {
+        position: relative;
+        width: 320px;
+        height: 320px;
+        margin: auto;
+        background: linear-gradient(145deg, #4a2f0d, #2c1c07);
+        border-radius: 20px;
+        padding-top: 15px;
+        box-shadow: inset 0 0 30px #000, 0 0 20px #ff6a00aa;
+        border: 2px solid #ff7a00;
+    }
+
+    canvas {
+        border-radius: 50%;
+        width: 290px;
+        height: 290px;
+        background: #000;
+        display: block;
+        margin: 10px auto 0 auto;
+        box-shadow: 0 0 25px #ff8c00aa, inset 0 0 20px #000;
+        border: 3px solid #ffae00;
+    }
+
+    .ponteiro {
+        position: absolute;
+        top: calc(50% - 150px);
+        left: 50%;
+        transform: translateX(-50%);
+        width: 0;
+        height: 0;
+        border-left: 18px solid transparent;
+        border-right: 18px solid transparent;
+        border-top: 32px solid white;
+        filter: drop-shadow(0 0 8px #ffffff) drop-shadow(0 0 5px #ffae00);
+        z-index: 50;
+        transition: 0.2s ease;
+    }
+
+    button {
+        margin-top: 25px;
+        background: linear-gradient(90deg, #ff6a00, #ff3c00);
+        color: white;
+        border: none;
+        font-size: 22px;
+        padding: 14px 30px;
+        border-radius: 14px;
+        cursor: pointer;
+        font-weight: bold;
+        transition: 0.25s;
+        box-shadow: 0 0 18px #ff6a00cc, inset 0 0 10px #000;
+        border: 2px solid #ffae00;
+    }
+
+    button:hover {
+        transform: scale(1.07);
+        box-shadow: 0 0 30px #ff8800ff;
+    }
+
+    .girando {
+        animation: pulse 0.5s infinite alternate ease-in-out !important;
+        pointer-events: none;
+        opacity: 0.7;
+    }
+
+    @keyframes pulse {
+        from { transform: scale(1); box-shadow: 0 0 15px #ff5c00; }
+        to   { transform: scale(1.08); box-shadow: 0 0 30px #ffaa00; }
+    }
+
+    #resultado {
+        margin-top: 28px;
+        font-size: 26px;
+        font-weight: bold;
+        text-shadow: 0 0 10px white;
+        min-height: 28px;
+        white-space: pre-line;
+    }
+
+    #avisoFim {
+        margin-top: 12px;
+        font-size: 22px;
+        font-weight: bold;
+        color: #fff;
+        text-shadow: 0 0 15px #ffae00;
+        min-height: 28px;
+    }
+
+    #girosRestantes {
+        font-size: 20px;
+        margin-top: 15px;
+        color: #ffd37a;
+        text-shadow: 0 0 8px #ffae00;
+        min-height: 28px;
+    }
+</style>
+</head>
+
+<body>
+
+<h1>🎡 Roleta de Cargos</h1>
+
+<div class="container">
+
+    <div class="wheel-box">
+        <canvas id="wheel" width="300" height="300"></canvas>
+        <div class="ponteiro"></div>
+    </div>
+
+    <button id="btnGirar">Girar Roleta</button>
+    <div id="girosRestantes">Giros restantes: <b>3</b></div>
+    <div id="resultado">⠀</div>
+    <div id="avisoFim"></div>
+</div>
+
+<audio id="tick" src="https://cdn.pixabay.com/download/audio/2021/08/04/audio_f5075c2042.mp3?filename=tick-85736.mp3" preload="auto"></audio>
+<audio id="win" src="https://cdn.pixabay.com/download/audio/2022/03/15/audio_fce346c94b.mp3?filename=success-1-6297.mp3" preload="auto"></audio>
+
+<script>
+const racas = [
+    { nome: "Pebleu",       chance: 45,  cor: "#a3d322" },
+    { nome: "Aldeão",       chance: 35,  cor: "#00ff44" },
+    { nome: "Nobre",        chance: 15,  cor: "#00d4ff" },
+    { nome: "Realeza",      chance: 5,   cor: "#ff2b2b" },
+    { nome: "Zogratis",     chance: 1,   cor: "#7bd3ff" },
+    { nome: "Grinberryall", chance: 0.5, cor: "#ffcc00" }
+];
+
+const canvas = document.getElementById("wheel");
+const ctx = canvas.getContext("2d");
+const tickSound = document.getElementById("tick");
+const winSound = document.getElementById("win");
+const btn = document.getElementById("btnGirar");
+const resultadoDiv = document.getElementById("resultado");
+const avisoFimDiv = document.getElementById("avisoFim");
+const girosRestantesDiv = document.getElementById("girosRestantes");
+
+let setores = [];
+let angulo = 0;
+let animando = false;
+let ultimoIndiceTick = -1;
+
+let giros = 0;
+const maxGiros = 3;
+
+function calcularSetores(){
+    const tamanhoMinimo = 5; // 5% mínimo visual
+    const totalChanceReal = racas.reduce((s, r) => s + r.chance, 0);
+
+    let temp = racas.map(r => {
+        let chanceVisual = (r.chance / totalChanceReal) * 100;
+        if(chanceVisual < tamanhoMinimo) chanceVisual = tamanhoMinimo;
+
+        return {
+            nome: r.nome,
+            cor: r.cor,
+            chanceVisual
+        };
+    });
+
+    const totalVisual = temp.reduce((s, r) => s + r.chanceVisual, 0);
+
+    setores = [];
+    let acc = 0;
+
+    temp.forEach(r => {
+        const inicio = (acc / totalVisual) * Math.PI * 2;
+        acc += r.chanceVisual;
+        const fim = (acc / totalVisual) * Math.PI * 2;
+
+        setores.push({
+            nome: r.nome,
+            cor: r.cor,
+            inicio,
+            fim
+        });
+    });
+}
+
+function desenhar(){
+    const w = canvas.width, h = canvas.height;
+    const cx = w/2, cy = h/2, radius = Math.min(w,h)/2 - 10;
+    ctx.clearRect(0,0,w,h);
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(angulo);
+
+    setores.forEach(s => {
+        ctx.beginPath();
+        ctx.fillStyle = s.cor;
+        ctx.moveTo(0,0);
+        ctx.arc(0,0,radius, s.inicio, s.fim);
+        ctx.fill();
+
+        ctx.save();
+        ctx.fillStyle = "#fff";
+        ctx.rotate((s.inicio + s.fim)/2);
+        ctx.textAlign = "center";
+        ctx.font = "16px Arial";
+        ctx.fillText(s.nome, radius * 0.60, 6);
+        ctx.restore();
+    });
+
+    ctx.beginPath();
+    ctx.fillStyle = "#111";
+    ctx.arc(0,0, radius * 0.22, 0, Math.PI*2);
+    ctx.fill();
+
+    ctx.restore();
+}
+
+function pegarSetorAtual(){
+    const anguloPonteiro = 3 * Math.PI / 2;
+    let ang = (anguloPonteiro - angulo) % (2*Math.PI);
+    if(ang < 0) ang += 2*Math.PI;
+    return setores.findIndex(s => ang >= s.inicio && ang < s.fim);
+}
+
+function girar(){
+    if(animando) return;
+
+    if(giros >= maxGiros){
+        avisoFimDiv.textContent = "Você usou todos os giros!";
+        return;
+    }
+
+    avisoFimDiv.textContent = ""; // limpa aviso antes de girar
+
+    giros++;
+    girosRestantesDiv.innerHTML = `Giros restantes: <b>${maxGiros - giros}</b>`;
+
+    animando = true;
+    btn.classList.add("girando");
+
+    let velocidade = 0.4;
+    let desaceleracao = 0.002;
+
+    function animar(){
+        angulo += velocidade;
+        desenhar();
+
+        const indice = pegarSetorAtual();
+        if(indice !== ultimoIndiceTick){
+            tickSound.currentTime = 0;
+            tickSound.play();
+            ultimoIndiceTick = indice;
+        }
+
+        velocidade -= desaceleracao;
+        if(velocidade > 0){
+            requestAnimationFrame(animar);
+        } else {
+            animando = false;
+            btn.classList.remove("girando");
+
+            const final = pegarSetorAtual();
+            resultadoDiv.textContent = "Resultado: " + setores[final].nome;
+
+            winSound.play();
+
+            if(giros >= maxGiros){
+                btn.disabled = true;
+                btn.style.opacity = "0.4";
+                btn.style.cursor = "not-allowed";
+                avisoFimDiv.textContent = "Você usou todos os giros!";
+            }
+        }
+    }
+    animar();
+}
+
+btn.onclick = girar;
+
+calcularSetores();
+desenhar();
+
+</script>
+</body>
+</html>
