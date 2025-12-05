@@ -1,1 +1,547 @@
 
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Roleta de Classes — Bloqueio Nível 3</title>
+<style>
+    body{background:#0c0c0c;color:#fff;font-family:Arial,Helvetica,sans-serif;text-align:center}
+    h1{margin-top:22px;text-shadow:0 0 10px #00aaff}
+    .container{width:420px;margin:30px auto;padding:18px;border-radius:14px;background:#171717;box-shadow:0 0 30px #003f5c}
+    .wheel-box{position:relative;width:340px;height:340px;margin:8px auto;background:#071927;border-radius:14px;padding-top:12px;box-shadow:inset 0 0 30px #000}
+    canvas{display:block;margin:0 auto;border-radius:50%;background:#000}
+    .ponteiro{position:absolute;top:calc(50% - 170px);left:50%;transform:translateX(-50%);width:0;height:0;border-left:18px solid transparent;border-right:18px solid transparent;border-top:34px solid #fff;filter:drop-shadow(0 0 6px #fff);z-index:50;pointer-events:none}
+    button{margin-top:18px;background:#0099ff;border:none;padding:12px 26px;border-radius:12px;font-size:18px;color:#fff;cursor:pointer;box-shadow:0 0 10px #00bfff}
+    button[disabled]{opacity:.45;cursor:not-allowed}
+    #resultado{margin-top:14px;font-weight:700;text-shadow:0 0 8px #fff;min-height:26px}
+    #cronometro{margin-top:10px;color:#8fffdc;min-height:22px}
+    #msgBloqueio{margin-top:10px;color:#ff8a8a;min-height:20px}
+    #debug{margin-top:8px;font-size:12px;color:#ccc;opacity:.7}
+</style>
+</head>
+<body>
+<h1>🎯 Roleta de Classes (Nível 3)</h1>
+<div class="container">
+    <div class="wheel-box">
+        <canvas id="wheel" width="320" height="320"></canvas>
+        <div class="ponteiro"></div>
+    </div>
+
+    <button id="btnGirar">Girar Roleta</button>
+    <div id="resultado">⠀</div>
+    <div id="cronometro"></div>
+    <div id="msgBloqueio"></div>
+    <div id="debug" style="display:none"></div>
+</div>
+
+<!-- Sons (troque se quiser) -->
+<audio id="tick" src="https://cdn.pixabay.com/download/audio/2021/08/04/audio_f5075c2042.mp3?filename=tick-85736.mp3" preload="auto"></audio>
+<audio id="win" src="https://cdn.pixabay.com/download/audio/2022/03/15/audio_fce346c94b.mp3?filename=success-1-6297.mp3" preload="auto"></audio>
+
+<script>
+/*
+  Roleta Nível 3 — fingerprint avançado + multi-storage + persistência extra.
+  - Ajustes: TEMPO_RECUPERACAO, LIMITE_GIROS, classes[] são fáceis de alterar.
+  - Para proteção absoluta entre navegadores/dispositivos, combine com servidor.
+*/
+
+/* ================= CONFIG ================= */
+const LIMITE_GIROS = 3;
+const TEMPO_RECUPERACAO = 20 * 60 * 60 * 1000; // 20 horas em ms
+
+/* ================ storage keys ================ */
+const K_OWNER_FP = "r3_owner_fp";     // fingerprint do owner (definido na 1ª execução)
+const K_SPINS_KEY_PREFIX = "r3_spins_"; // spins per fingerprint -> K_SPINS_KEY_PREFIX + fpHash
+const K_NEXT_KEY_PREFIX = "r3_next_";  // next recovery per fingerprint
+const K_FALLBACK_TOKEN = "r3_browser_token"; // token local (redundância)
+
+/* ================ elementos ================ */
+const canvas = document.getElementById('wheel');
+const ctx = canvas.getContext('2d');
+const btn = document.getElementById('btnGirar');
+const resultadoDiv = document.getElementById('resultado');
+const cronometroDiv = document.getElementById('cronometro');
+const msgBloqueio = document.getElementById('msgBloqueio');
+const debugDiv = document.getElementById('debug');
+const tickSound = document.getElementById('tick');
+const winSound = document.getElementById('win');
+
+/* ================= util hash ================= */
+async function sha256hex(str) {
+    const enc = new TextEncoder().encode(str);
+    const buf = await crypto.subtle.digest('SHA-256', enc);
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+/* ================ fingerprinting ================
+   Uses a combination of:
+   - navigator props (userAgent, platform, hw concurrency, deviceMemory, languages)
+   - screen (width/height/colorDepth, pixelDepth)
+   - timezone, touch support
+   - canvas rendering fingerprint
+   - webgl renderer info
+   - audio fingerprint (OfflineAudioContext)
+   - installed plugins (navigator.plugins) if present
+*/
+async function fingerprintDevice() {
+    // basic props
+    const nav = navigator;
+    const props = [
+        nav.userAgent || '',
+        nav.platform || '',
+        nav.hardwareConcurrency || '',
+        nav.deviceMemory || '',
+        JSON.stringify(nav.languages || []),
+        screen.width + 'x' + screen.height,
+        screen.colorDepth || '',
+        Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+        nav.maxTouchPoints || ''
+    ].join('||');
+
+    // canvas fingerprint
+    function canvasFP() {
+        try {
+            const cvs = document.createElement('canvas');
+            const cctx = cvs.getContext('2d');
+            cctx.textBaseline = "top";
+            cctx.font = "16px 'Arial'";
+            cctx.fillStyle = "#f60";
+            cctx.fillRect(125,1,62,20);
+            cctx.fillStyle = "#069";
+            cctx.fillText("roleta-fp-demo!@#", 2, 2);
+            cctx.fillStyle = "rgba(102, 204, 0, 0.7)";
+            cctx.fillText("roleta-fp-demo!@#", 4, 4);
+            return cvs.toDataURL();
+        } catch (e) { return ""; }
+    }
+
+    // webgl renderer
+    function webglFP() {
+        try {
+            const gl = document.createElement('canvas').getContext('webgl') || document.createElement('canvas').getContext('experimental-webgl');
+            if (!gl) return '';
+            const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+            const vendor = dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : '';
+            const renderer = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : '';
+            return vendor + '|' + renderer;
+        } catch(e){ return ''; }
+    }
+
+    // audio fingerprint (quick)
+    async function audioFP() {
+        try {
+            const AudioCtx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+            if (!AudioCtx) return '';
+            const ctx = new AudioCtx(1, 44100, 44100);
+            const oscillator = ctx.createOscillator();
+            const analyser = ctx.createAnalyser();
+            oscillator.type = 'triangle';
+            oscillator.frequency.setValueAtTime(10000, ctx.currentTime);
+            analyser.fftSize = 512;
+            oscillator.connect(analyser);
+            analyser.connect(ctx.destination);
+            oscillator.start(0);
+            const buffer = await ctx.startRendering();
+            const channelData = buffer.getChannelData(0).slice(0, 1000);
+            let sum = 0;
+            for (let i=0;i<channelData.length;i++){ sum += Math.abs(channelData[i]); }
+            return String(sum);
+        } catch(e){ return ''; }
+    }
+
+    const parts = [
+        props,
+        canvasFP(),
+        webglFP()
+    ];
+
+    try {
+        parts.push(await audioFP());
+    } catch(e) {
+        parts.push('');
+    }
+
+    // plugins list (if exists)
+    try {
+        if (navigator.plugins) {
+            const names = Array.from(navigator.plugins).map(p => p.name + '::' + p.description).join(';');
+            parts.push(names);
+        }
+    } catch(e){ parts.push(''); }
+
+    // final composite and hash
+    const composite = parts.join('~~~');
+    const h = await sha256hex(composite);
+    return { raw: composite, hash: h };
+}
+
+/* ================ persistent storage helpers ================ */
+/* Try to persist storage (request persistent storage permission) */
+async function tryPersistStorage() {
+    if (navigator.storage && navigator.storage.persist) {
+        try {
+            const ok = await navigator.storage.persist();
+            return ok;
+        } catch(e) { return false; }
+    }
+    return false;
+}
+
+/* IndexedDB simple wrapper to store per-fingerprint data (as redundancy) */
+function idbSet(key, value) {
+    return new Promise((resolve, reject) => {
+        try {
+            const req = indexedDB.open("r3_db_v1", 1);
+            req.onupgradeneeded = () => req.result.createObjectStore("store");
+            req.onsuccess = () => {
+                const db = req.result;
+                const tx = db.transaction("store","readwrite");
+                tx.objectStore("store").put(value, key);
+                tx.oncomplete = ()=>{ db.close(); resolve(true); };
+                tx.onerror = (e)=>{ db.close(); reject(e); };
+            };
+            req.onerror = e => reject(e);
+        } catch(e){ reject(e); }
+    });
+}
+function idbGet(key) {
+    return new Promise((resolve,reject) => {
+        try {
+            const req = indexedDB.open("r3_db_v1",1);
+            req.onupgradeneeded = () => req.result.createObjectStore("store");
+            req.onsuccess = () => {
+                const db = req.result;
+                const tx = db.transaction("store","readonly");
+                const g = tx.objectStore("store").get(key);
+                g.onsuccess = ()=>{ db.close(); resolve(g.result); };
+                g.onerror = (e)=>{ db.close(); reject(e); };
+            };
+            req.onerror = e => reject(e);
+        } catch(e){ reject(e); }
+    });
+}
+
+/* cookie helper */
+function setCookie(name,value,days){
+    let expires="";
+    if(days){
+        const d = new Date(); d.setTime(d.getTime()+days*24*60*60*1000);
+        expires=";expires="+d.toUTCString();
+    }
+    document.cookie = name+"="+encodeURIComponent(value||"")+expires+";path=/;SameSite=Lax";
+}
+function getCookie(name){
+    const v = document.cookie.match('(^|;)\\s*'+name+'\\s*=\\s*([^;]+)');
+    return v ? decodeURIComponent(v.pop()) : null;
+}
+
+/* ===================== spins helpers tied to fingerprint ===================== */
+function spinsKey(fpHash){ return K_SPINS_KEY_PREFIX + fpHash; }
+function nextKey(fpHash){ return K_NEXT_KEY_PREFIX + fpHash; }
+
+function readSpinsLocal(fpHash){
+    try {
+        const k = spinsKey(fpHash);
+        const v = localStorage.getItem(k);
+        if (v === null) return null;
+        const n = Number(v);
+        if (Number.isNaN(n)) return null;
+        return Math.max(0, Math.min(LIMITE_GIROS, Math.floor(n)));
+    } catch(e){ return null; }
+}
+function writeSpinsLocal(fpHash, n){
+    try { localStorage.setItem(spinsKey(fpHash), String(Math.max(0, Math.min(LIMITE_GIROS, Math.floor(n))))) } catch(e){}
+}
+function readNextLocal(fpHash){
+    try {
+        const v = localStorage.getItem(nextKey(fpHash));
+        if (!v) return null;
+        const t = Number(v);
+        if (Number.isNaN(t)) return null;
+        return t;
+    } catch(e){ return null; }
+}
+function writeNextLocal(fpHash, t){
+    try {
+        if (!t) localStorage.removeItem(nextKey(fpHash));
+        else localStorage.setItem(nextKey(fpHash), String(Number(t)));
+    } catch(e){}
+}
+
+/* higher-level: read from any storage fallback chain */
+async function readSpins(fpHash){
+    // 1) localStorage
+    let v = readSpinsLocal(fpHash);
+    if (v !== null) return v;
+
+    // 2) cookie
+    try {
+        const c = getCookie(spinsKey(fpHash));
+        if (c !== null) {
+            const n = Number(c);
+            if (!Number.isNaN(n)) {
+                // sync back to localStorage
+                writeSpinsLocal(fpHash, n);
+                return Math.max(0, Math.min(LIMITE_GIROS, Math.floor(n)));
+            }
+        }
+    } catch(e){}
+
+    // 3) indexedDB
+    try {
+        const dbv = await idbGet(spinsKey(fpHash));
+        if (dbv !== undefined) {
+            writeSpinsLocal(fpHash, dbv);
+            setCookie(spinsKey(fpHash), String(dbv), 365);
+            return Math.max(0, Math.min(LIMITE_GIROS, Math.floor(dbv)));
+        }
+    } catch(e){}
+
+    // nothing found
+    return null;
+}
+
+async function readNext(fpHash){
+    let v = readNextLocal(fpHash);
+    if (v !== null) return v;
+    // cookie
+    try {
+        const c = getCookie(nextKey(fpHash));
+        if (c) { const t = Number(c); if (!Number.isNaN(t)){ writeNextLocal(fpHash,t); return t; } }
+    } catch(e){}
+    // idb
+    try {
+        const dbv = await idbGet(nextKey(fpHash));
+        if (dbv !== undefined) { writeNextLocal(fpHash, dbv); setCookie(nextKey(fpHash), String(dbv), 365); return dbv; }
+    } catch(e){}
+    return null;
+}
+
+async function writeAllStorages(fpHash, spins, nextT){
+    try {
+        writeSpinsLocal(fpHash, spins);
+        if (nextT) writeNextLocal(fpHash, nextT); else writeNextLocal(fpHash, null);
+        setCookie(spinsKey(fpHash), String(spins), 365);
+        if (nextT) setCookie(nextKey(fpHash), String(nextT), 365);
+
+        // try indexedDB persist
+        try {
+            await idbSet(spinsKey(fpHash), spins);
+            if (nextT) await idbSet(nextKey(fpHash), nextT);
+        } catch(e){}
+    } catch(e){}
+}
+
+/* ================== core logic ================== */
+let CURRENT_FP = null; // {hash,raw}
+let OWNER_FP_HASH = null;
+
+async function initCore() {
+    // try persist
+    try { await tryPersistStorage(); } catch(e){}
+
+    // compute fingerprint
+    const fp = await fingerprintDevice();
+    CURRENT_FP = fp;
+    debugDiv.textContent = "FP: " + fp.hash;
+    // read owner fp from localStorage (if present)
+    const owner = localStorage.getItem(K_OWNER_FP);
+    OWNER_FP_HASH = owner;
+
+    // If no owner yet -> this device becomes owner and we create initial spins
+    if (!owner) {
+        // persist owner as this fingerprint (so other devices can't become owner)
+        localStorage.setItem(K_OWNER_FP, fp.hash);
+        OWNER_FP_HASH = fp.hash;
+        // initialize spins for this fingerprint
+        await writeAllStorages(fp.hash, LIMITE_GIROS, null);
+    } else {
+        // owner exists. If current fingerprint does NOT match owner -> block (different device)
+        if (owner !== fp.hash) {
+            // Allow case: different browser on same device tends to produce same fp. If not same -> block.
+            bloquear("❌ Bloqueado: roleta só funciona no dispositivo original onde foi ativada.");
+            throw new Error("blocked_different_device");
+        } 
+        // same device — ensure we have spins in at least one storage
+        let spins = await readSpins(fp.hash);
+        if (spins === null) {
+            // first time this browser on the owner device: sync from owner defaults (set to LIMITE)
+            spins = LIMITE_GIROS;
+            const next = null;
+            await writeAllStorages(fp.hash, spins, next);
+        }
+    }
+}
+
+/* user-visible blocking */
+function bloquear(m) {
+    msgBloqueio.textContent = m;
+    btn.disabled = true;
+    canvas.style.pointerEvents = "none";
+    resultadoDiv.textContent = "";
+    cronometroDiv.textContent = "";
+}
+
+/* recovery logic per fingerprint */
+async function processRecovery(fpHash) {
+    let spins = await readSpins(fpHash);
+    if (spins === null) {
+        // initialize
+        spins = LIMITE_GIROS;
+        await writeAllStorages(fpHash, spins, null);
+        return;
+    }
+    if (spins >= LIMITE_GIROS) {
+        // clear next
+        await writeAllStorages(fpHash, spins, null);
+        return;
+    }
+    let nextT = await readNext(fpHash);
+    const now = Date.now();
+    if (!nextT) {
+        // set next
+        nextT = now + TEMPO_RECUPERACAO;
+        await writeAllStorages(fpHash, spins, nextT);
+        return;
+    }
+    if (now < nextT) return;
+    // calculate how many intervals passed
+    const delta = now - nextT;
+    const recuperados = 1 + Math.floor(delta / TEMPO_RECUPERACAO);
+    let novo = spins + recuperados;
+    if (novo >= LIMITE_GIROS) {
+        novo = LIMITE_GIROS;
+        await writeAllStorages(fpHash, novo, null);
+    } else {
+        const novoNext = nextT + recuperados * TEMPO_RECUPERACAO;
+        await writeAllStorages(fpHash, novo, novoNext);
+    }
+}
+
+/* UI update */
+async function atualizarUI() {
+    try {
+        if (!CURRENT_FP) return;
+        await processRecovery(CURRENT_FP.hash);
+        const spins = await readSpins(CURRENT_FP.hash);
+        const nextT = await readNext(CURRENT_FP.hash);
+        if (spins > 0) {
+            btn.disabled = false;
+            btn.textContent = `Girar Roleta (${spins})`;
+            cronometroDiv.textContent = "";
+            msgBloqueio.textContent = "";
+        } else {
+            btn.disabled = true;
+            btn.textContent = "Acabou os giros";
+            if (nextT) {
+                const left = Math.max(0, nextT - Date.now());
+                const h = Math.floor(left/1000/60/60);
+                const m = Math.floor((left/1000/60)%60);
+                const s = Math.floor((left/1000)%60);
+                cronometroDiv.textContent = `Próximo giro em ${h}h ${m}m ${s}s`;
+            } else {
+                cronometroDiv.textContent = `Próximo giro em 20h`;
+            }
+        }
+    } catch(e) {
+        bloquear("Erro no armazenamento — roleta bloqueada.");
+    }
+}
+
+/* ============== roleta drawing & logic (igual ao anterior) ============== */
+const classes = [
+    { nome: "🤢 Pebleu",       cor: "#4d4d4d" },
+    { nome: "👨‍🌾 Aldeão",     cor: "#7dff00" },
+    { nome: "💎 Nobre",        cor: "#0099ff" },
+    { nome: "🏰 Realeza",      cor: "#d4af37" },
+    { nome: "🌀 Zogratis",     cor: "#8000ff" },
+    { nome: "👑 Grinberryall", cor: "#ff00c8" }
+];
+
+let setores = [], ang = 0, animando = false, ultimoTick = -1;
+
+function calcularSetores() {
+    const total = classes.length;
+    setores = classes.map((c,i) => {
+        const inicio = (i/total)*2*Math.PI;
+        const fim = ((i+1)/total)*2*Math.PI;
+        return { nome:c.nome, cor:c.cor, inicio, fim };
+    });
+}
+function desenhar(){
+    const w = canvas.width, h = canvas.height; const cx = w/2, cy = h/2, radius = Math.min(w,h)/2 - 12;
+    ctx.clearRect(0,0,w,h);
+    ctx.save(); ctx.translate(cx,cy); ctx.rotate(ang);
+    setores.forEach(s=>{
+        ctx.beginPath(); ctx.fillStyle = s.cor; ctx.moveTo(0,0); ctx.arc(0,0,radius,s.inicio,s.fim); ctx.fill();
+        ctx.save(); ctx.rotate((s.inicio+s.fim)/2); ctx.fillStyle="#fff"; ctx.textAlign="center"; ctx.font="15px Arial"; ctx.fillText(s.nome, radius*0.6, 6); ctx.restore();
+    });
+    ctx.beginPath(); ctx.fillStyle="#111"; ctx.arc(0,0, radius*0.2,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+}
+function pegarSetorAtual(){
+    const angP = 3*Math.PI/2;
+    let a = (angP - ang)%(2*Math.PI); if (a<0) a+=2*Math.PI;
+    return setores.findIndex(s=> a>=s.inicio && a<s.fim);
+}
+
+/* handle spin usage */
+async function usarSpin() {
+    if (!CURRENT_FP) return;
+    const fp = CURRENT_FP.hash;
+    let spins = await readSpins(fp);
+    if (spins === null) spins = LIMITE_GIROS;
+    if (spins <= 0) { atualizarUI(); return; }
+
+    // consome 1
+    spins = spins - 1;
+    let nextT = await readNext(fp);
+    if (!nextT) nextT = Date.now() + TEMPO_RECUPERACAO;
+    await writeAllStorages(fp, spins, nextT);
+    await atualizarUI();
+
+    // animação roleta
+    animando = true; resultadoDiv.textContent = "Girando...";
+    let vel = Math.random()*4 + 5; const desac = 0.015;
+    function anim(){
+        ang += vel*0.02;
+        vel -= desac;
+        if (vel < 0.05) vel = 0;
+        desenhar();
+        const idx = pegarSetorAtual();
+        if (idx !== ultimoTick) { try{ tickSound.currentTime=0; tickSound.play(); }catch(e){} ultimoTick = idx; }
+        if (vel > 0) requestAnimationFrame(anim); else {
+            animando = false;
+            const final = pegarSetorAtual();
+            resultadoDiv.textContent = "Resultado: " + setores[final].nome;
+            try{ winSound.currentTime=0; winSound.play(); }catch(e){}
+            atualizarUI();
+        }
+    }
+    anim();
+}
+
+/* ============== inicialização ============== */
+async function iniciar() {
+    calcularSetores(); desenhar();
+
+    try {
+        await initCore(); // calcula fingerprint, verifica owner, inicializa spins se necessário
+    } catch(e) {
+        // initCore já bloqueou se necessário
+        return;
+    }
+
+    await atualizarUI();
+    setInterval(atualizarUI, 1000);
+    btn.addEventListener('click', () => { if(!animando) usarSpin(); });
+}
+
+/* start when DOM ready */
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', iniciar);
+else iniciar();
+
+</script>
+</body>
+</html>
